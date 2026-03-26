@@ -2,6 +2,7 @@
   "project": "example-feature",
   "branchName": "ralph/example-feature",
   "description": "Add user authentication with JWT tokens",
+  "smokeTest": "",
   "userStories": [
     {
       "id": "US-001",

@@ -67,13 +67,18 @@ ralph.sh (bash while loop)
   │
   ├─ reads prd.json → picks next story where passes: false
   │
-  ├─ PHASE 1: claude -p "implement this story..."
+  ├─ PHASE 1: claude -p "implement this story..." (5 min timeout)
   │     Claude Code reads CLAUDE.md + progress.txt + codebase
   │     Writes code, outputs structured summary
   │
-  ├─ PHASE 2: codex exec "review this implementation..."
+  ├─ PHASE 2: smoke test (auto-detected, no agent)
+  │     Runs tests/typecheck/lint automatically
+  │     FAIL → revert, feed errors to builder, skip Codex
+  │     PASS → continue to review
+  │
+  ├─ PHASE 3: codex exec "review this implementation..." (3 min timeout)
   │     Codex reads AGENTS.md + progress.txt + codebase (with Claude's changes)
-  │     Reviews, runs tests, outputs VERDICT: PASS or FAIL
+  │     Reviews code quality + acceptance criteria
   │
   ├─ If PASS → git commit → mark story done → next story
   ├─ If FAIL → git revert → save feedback → retry same story
@@ -86,6 +91,24 @@ ralph.sh (bash while loop)
 - `progress.txt` — what was learned (memory)
 - `git history` — what changed (diffs)
 - `.ralph-feedback.tmp` — review feedback (ephemeral)
+
+### Smoke Test (inspired by [autoresearch](https://github.com/karpathy/autoresearch))
+
+The smoke test is an objective metric gate between Build and Review. It auto-detects your project's test/build commands and runs them before Codex even sees the code. If typecheck or tests fail, changes are reverted immediately — no wasted reviewer call.
+
+**Auto-detection order:**
+1. `prd.json` `"smokeTest"` field (explicit override)
+2. `package.json` test script → `npm test`
+3. `tsconfig.json` → `npx tsc --noEmit`
+4. `pyproject.toml` / `pytest.ini` → `pytest`
+5. `Cargo.toml` → `cargo check && cargo test`
+6. `go.mod` → `go vet ./... && go test ./...`
+7. `Makefile` with test target → `make test`
+
+To set a custom smoke test, add to your `prd.json`:
+```json
+"smokeTest": "npm test && npx tsc --noEmit"
+```
 
 ## File Reference
 
@@ -121,6 +144,10 @@ BUILDER="claude"      # swap to: aider, cursor, etc.
 REVIEWER="codex"      # swap to: claude (yes, Claude can review too)
 MAX_RETRIES=3         # retries per story before skipping
 COOLDOWN=5            # seconds between iterations
+BUILD_TIMEOUT=300     # 5 min builder cap (forces right-sized stories)
+REVIEW_TIMEOUT=180    # 3 min reviewer cap
+MAX_TURNS=15          # builder context turns
+SMOKE_TEST=""         # auto-detect, or set explicit command
 ```
 
 ## Cost Awareness
