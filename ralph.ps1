@@ -304,18 +304,23 @@ LEARNINGS: <any codebase patterns or gotchas discovered>
     $buildPrompt | Out-File -Encoding utf8 .ralph-build-prompt.tmp
     $promptFile = (Resolve-Path .ralph-build-prompt.tmp).Path
 
+    # Resolve full path to builder executable so Start-Job can find it
+    $builderFullPath = (Get-Command $script:BUILDER -ErrorAction SilentlyContinue).Source
+    $buildWorkDir = (Get-Location).Path
+
     # First iteration: fresh session. Subsequent: --continue to keep context + auto-compact.
     $useContinue = -not $isFirstBuild
     $buildJob = Start-Job -ScriptBlock {
-        param($builderExe, $promptPath, $maxTurns, $shouldContinue)
+        param($builderPath, $promptPath, $maxTurns, $shouldContinue, $workDir)
+        Set-Location $workDir
         $prompt = Get-Content $promptPath -Raw
         if ($shouldContinue) {
-            $result = & $builderExe --continue -p $prompt --permission-mode auto --max-turns $maxTurns 2>&1
+            $result = & $builderPath --continue -p $prompt --permission-mode auto --max-turns $maxTurns 2>&1
         } else {
-            $result = & $builderExe -p $prompt --permission-mode auto --max-turns $maxTurns 2>&1
+            $result = & $builderPath -p $prompt --permission-mode auto --max-turns $maxTurns 2>&1
         }
         return ($result | Out-String)
-    } -ArgumentList $script:BUILDER, $promptFile, $script:MAX_TURNS, $useContinue
+    } -ArgumentList $builderFullPath, $promptFile, $script:MAX_TURNS, $useContinue, $buildWorkDir
 
     $buildFinished = $buildJob | Wait-Job -Timeout $script:BUILD_TIMEOUT
     if ($buildFinished) {
@@ -405,12 +410,17 @@ LEARNINGS: <any insights>
     $reviewPrompt | Out-File -Encoding utf8 .ralph-review-prompt.tmp
     $reviewPromptFile = (Resolve-Path .ralph-review-prompt.tmp).Path
 
+    # Resolve full path to reviewer executable so Start-Job can find it
+    $reviewerFullPath = (Get-Command $script:REVIEWER -ErrorAction SilentlyContinue).Source
+    $reviewWorkDir = (Get-Location).Path
+
     $reviewJob = Start-Job -ScriptBlock {
-        param($reviewerExe, $promptPath)
+        param($reviewerPath, $promptPath, $workDir)
+        Set-Location $workDir
         $prompt = Get-Content $promptPath -Raw
-        $result = & $reviewerExe exec --full-auto --sandbox workspace-write $prompt 2>&1
+        $result = & $reviewerPath exec --full-auto --sandbox workspace-write $prompt 2>&1
         return ($result | Out-String)
-    } -ArgumentList $script:REVIEWER, $reviewPromptFile
+    } -ArgumentList $reviewerFullPath, $reviewPromptFile, $reviewWorkDir
 
     $reviewFinished = $reviewJob | Wait-Job -Timeout $script:REVIEW_TIMEOUT
     if ($reviewFinished) {
@@ -457,6 +467,7 @@ LEARNINGS: <any insights>
 
         & git add -A
         & git commit -m "[ralph] ${storyId}: $storyTitle" 2>$null
+        & git push 2>$null  # Keep GitHub in sync
 
         Add-Progress "COMPLETED ${storyId}: $storyTitle"
 
@@ -477,11 +488,15 @@ LEARNINGS: <any insights>
         & git clean -fd 2>$null
 
     } else {
-        Write-Warn "Unclear verdict: '$verdict'. Treating as pass."
-        Set-StoryPassed $storyId
-        & git add -A
-        & git commit -m "[ralph] ${storyId}: $storyTitle" 2>$null
-        $lastStoryId = ""
+        $retryCount++
+        Write-Warn "Unclear verdict: '$verdict'. Treating as review failure (attempt $retryCount/$($script:MAX_RETRIES))"
+
+        "REVIEW ERROR - Codex did not return a clear VERDICT. The code may be fine but needs re-review. Make sure all acceptance criteria are met." | Out-File -Encoding utf8 .ralph-feedback.tmp
+
+        Add-Progress "REVIEW_ERROR $storyId (attempt ${retryCount}): Codex returned unclear verdict '$verdict'"
+
+        & git checkout -- . 2>$null
+        & git clean -fd 2>$null
     }
 
     Write-Log "Progress: $(Get-StoryCount)"

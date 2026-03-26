@@ -1,0 +1,10 @@
+{
+  "name": "ring-leader",
+  "description": "Multi-agent build loop: Claude Code builds, Codex reviews, ralph orchestrates. Includes ClaudeCodexLoop interview skill for starting projects from Telegram.",
+  "version": "1.0.0",
+  "author": {
+    "name": "S-KP-S"
+  },
+  "repository": "https://github.com/S-KP-S/Ring-Leader",
+  "keywords": ["multi-agent", "codex", "claude", "build-loop", "ralph"]
+}

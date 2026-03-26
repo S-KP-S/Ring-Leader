@@ -420,6 +420,7 @@ LEARNINGS: <any insights>"
         # Git commit (the ratchet — only good code advances)
         git add -A
         git commit -m "[ralph] $STORY_ID: $STORY_TITLE" 2>/dev/null || true
+        git push 2>/dev/null || true  # Keep GitHub in sync
 
         append_progress "COMPLETED $STORY_ID: $STORY_TITLE"
 
