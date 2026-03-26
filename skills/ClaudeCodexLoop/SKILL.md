@@ -143,6 +143,12 @@ From the interview answers, generate 5-8 user stories following this structure:
 - "Add auth" is too big. "Add login endpoint with JWT" is right.
 - Add "Typecheck passes" or equivalent to every story's acceptance criteria
 
+**Architecture rules (CRITICAL):**
+- **Single dev command.** The scaffolding story MUST include an acceptance criterion that the entire app starts with ONE command (e.g. `npm run dev`). Never create separate servers that require multiple terminals.
+- **Prefer fullstack frameworks.** For web apps, default to Next.js (App Router + API routes), Nuxt, or SvelteKit — the API lives alongside the frontend. Only use separate backend if the user specifically requests Python/FastAPI, Go, etc.
+- **If backend + frontend are separate:** The scaffolding story must include a root-level `package.json` with a `dev` script that starts both concurrently, plus a `start.ps1` that runs everything with one command.
+- **Root README with Quick Start.** Scaffolding acceptance criteria must include: "Root README.md has Quick Start section with exact commands to install and run."
+
 ### 3.6 Commit & Push
 
 ```powershell

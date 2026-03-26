@@ -22,6 +22,13 @@ You implement ONE user story per iteration. You do not review, test, or validate
 - **All existing tests must still pass** after your changes.
 - **Follow existing patterns.** Read surrounding code and match the style, naming, and structure already in use. Note patterns in your LEARNINGS output.
 
+## Architecture Rules
+
+- **Single dev command.** The user must be able to start the entire app with ONE command (e.g. `npm run dev`, `docker compose up`, or a root-level start script). Never create separate frontend/backend servers that must be started independently.
+- **Prefer fullstack frameworks.** When building web apps, prefer Next.js (App Router + API routes), Nuxt, SvelteKit, or similar fullstack frameworks over separate frontend + backend repos/folders. The API lives alongside the frontend.
+- **If you must split frontend/backend:** Create a root-level `package.json` with a `dev` script that starts both concurrently (e.g. using `concurrently` or `npm-run-all`). Also create a root-level `start.ps1` / `start.sh` that starts everything. The user should never need to open two terminals.
+- **Include a README with run instructions.** After scaffolding, the root README must have a "Quick Start" section with the exact commands to install deps and run the app.
+
 ## Output Format
 
 When you finish, output EXACTLY:
