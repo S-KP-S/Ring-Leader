@@ -19,28 +19,28 @@ param(
 $ErrorActionPreference = "Continue"
 
 # ── Config ───────────────────────────────────────────────
-$BRANCH = "ralph/$Tag"
-$BUILDER = "claude"
-$REVIEWER = "codex"
-$COOLDOWN = 5
-$BUILD_TIMEOUT = 300     # 5 min
-$REVIEW_TIMEOUT = 180    # 3 min
-$MAX_TURNS = 15
-$SMOKE_TEST = ""
-$MAX_RETRIES = 3
+$script:BRANCH = "ralph/$Tag"
+$script:BUILDER = "claude"
+$script:REVIEWER = "codex"
+$script:COOLDOWN = 5
+$script:BUILD_TIMEOUT = 300
+$script:REVIEW_TIMEOUT = 180
+$script:MAX_TURNS = 15
+$script:SMOKE_TEST = ""
+$script:MAX_RETRIES = 3
 
 # ── Logging ──────────────────────────────────────────────
-function Log($msg)   { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" -ForegroundColor Blue }
-function Pass($msg)  { Write-Host "[PASS] $msg" -ForegroundColor Green }
-function Fail($msg)  { Write-Host "[FAIL] $msg" -ForegroundColor Red }
-function Warn($msg)  { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
-function Smoke($msg) { Write-Host "[SMOKE] $msg" -ForegroundColor Cyan }
+function Write-Log([string]$msg)   { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" -ForegroundColor Blue }
+function Write-Pass([string]$msg)  { Write-Host "[PASS] $msg" -ForegroundColor Green }
+function Write-Fail([string]$msg)  { Write-Host "[FAIL] $msg" -ForegroundColor Red }
+function Write-Warn([string]$msg)  { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Smoke([string]$msg) { Write-Host "[SMOKE] $msg" -ForegroundColor Cyan }
 
 # ── Preflight ────────────────────────────────────────────
-function Check-Deps {
+function Test-Dependencies {
     $missing = @()
-    if (-not (Get-Command $BUILDER -ErrorAction SilentlyContinue)) { $missing += $BUILDER }
-    if (-not (Get-Command $REVIEWER -ErrorAction SilentlyContinue)) { $missing += $REVIEWER }
+    if (-not (Get-Command $script:BUILDER -ErrorAction SilentlyContinue)) { $missing += $script:BUILDER }
+    if (-not (Get-Command $script:REVIEWER -ErrorAction SilentlyContinue)) { $missing += $script:REVIEWER }
     if (-not (Get-Command "jq" -ErrorAction SilentlyContinue)) { $missing += "jq" }
     if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) { $missing += "git" }
 
@@ -52,138 +52,118 @@ function Check-Deps {
 
 # ── PRD helpers ──────────────────────────────────────────
 function Get-NextStory {
-    $result = jq -r '[.userStories[] | select(.passes == false)] | sort_by(.priority) | .[0] // empty' prd.json 2>$null
-    return $result
+    $raw = & jq -r '[.userStories[] | select(.passes == false)] | sort_by(.priority) | .[0] // empty' prd.json 2>$null
+    if ($raw -and $raw.Trim()) { return ($raw | Out-String).Trim() }
+    return $null
 }
 
 function Get-StoryCount {
-    $total = jq '.userStories | length' prd.json 2>$null
-    $done = jq '[.userStories[] | select(.passes == true)] | length' prd.json 2>$null
-    return "$done/$total"
+    $total = & jq '.userStories | length' prd.json 2>$null
+    $done = & jq '[.userStories[] | select(.passes == true)] | length' prd.json 2>$null
+    return "${done}/${total}"
 }
 
 function Test-AllDone {
-    $remaining = jq '[.userStories[] | select(.passes == false)] | length' prd.json 2>$null
-    return ($remaining -eq "0")
+    $remaining = & jq '[.userStories[] | select(.passes == false)] | length' prd.json 2>$null
+    return ([string]$remaining).Trim() -eq "0"
 }
 
-function Set-StoryPassed($storyId) {
-    $escaped = $storyId.Replace('"', '\"')
-    jq --arg id "$escaped" '(.userStories[] | select(.id == $id)).passes = true' prd.json > prd.tmp
+function Set-StoryPassed([string]$storyId) {
+    & jq --arg id $storyId '(.userStories[] | select(.id == $id)).passes = true' prd.json | Out-File -Encoding utf8 prd.tmp
     Move-Item -Force prd.tmp prd.json
 }
 
+function Get-StoryField([string]$json, [string]$field) {
+    $result = $json | & jq -r ".$field" 2>$null
+    return ($result | Out-String).Trim()
+}
+
+function Get-StoryAC([string]$json) {
+    $result = $json | & jq -r '.acceptanceCriteria | join("\n  - ")' 2>$null
+    return ($result | Out-String).Trim()
+}
+
 # ── Progress file ────────────────────────────────────────
-function Add-Progress($text) {
+function Add-Progress([string]$text) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "`n--- [$timestamp] ---`n$text" | Out-File -Append -Encoding utf8 progress.txt
+    $entry = "`n--- [$timestamp] ---`n$text"
+    [System.IO.File]::AppendAllText("$(Get-Location)\progress.txt", $entry)
 }
 
 # ── Smoke test detection ─────────────────────────────────
 function Get-SmokeTestCommand {
     # 1. Check prd.json for explicit smokeTest
-    $prdSmoke = jq -r '.smokeTest // empty' prd.json 2>$null
-    if ($prdSmoke) { return $prdSmoke }
+    $prdSmoke = & jq -r '.smokeTest // empty' prd.json 2>$null
+    if ($prdSmoke -and $prdSmoke.Trim()) { return $prdSmoke.Trim() }
 
     # 2. User override
-    if ($SMOKE_TEST) { return $SMOKE_TEST }
+    if ($script:SMOKE_TEST) { return $script:SMOKE_TEST }
 
     # 3. Auto-detect
     $cmds = @()
 
-    # Node.js
     if (Test-Path "package.json") {
-        $hasTest = jq -r '.scripts.test // empty' package.json 2>$null
-        if ($hasTest -and $hasTest -ne 'echo "Error: no test specified" && exit 1') {
+        $hasTest = & jq -r '.scripts.test // empty' package.json 2>$null
+        if ($hasTest -and $hasTest.Trim() -and $hasTest -notmatch 'no test specified') {
             $cmds += "npm test"
         }
     }
 
-    # TypeScript
     if (Test-Path "tsconfig.json") {
         $cmds += "npx tsc --noEmit"
     }
 
-    # Python
     if ((Test-Path "pyproject.toml") -or (Test-Path "pytest.ini") -or (Test-Path "setup.py")) {
         if (Get-Command "pytest" -ErrorAction SilentlyContinue) {
             $cmds += "pytest"
         }
     }
 
-    # Rust
     if (Test-Path "Cargo.toml") {
         $cmds += "cargo check"
         $cmds += "cargo test"
     }
 
-    # Go
     if (Test-Path "go.mod") {
         $cmds += "go vet ./..."
         $cmds += "go test ./..."
     }
 
     if ($cmds.Count -gt 0) {
-        return $cmds -join " && "
+        return ($cmds -join " && ")
     }
     return ""
 }
 
-function Invoke-SmokeTest($smokeCmd) {
+function Invoke-SmokeTest([string]$smokeCmd) {
     if (-not $smokeCmd) {
-        Smoke "No tests detected - skipping smoke test"
+        Write-Smoke "No tests detected - skipping smoke test"
         return $true
     }
 
-    Smoke "Running: $smokeCmd"
+    Write-Smoke "Running: $smokeCmd"
 
-    try {
-        $output = cmd /c "$smokeCmd 2>&1"
-        if ($LASTEXITCODE -ne 0) {
-            Fail "Smoke test failed (exit code: $LASTEXITCODE)"
-            $output | Select-Object -Last 50 | Out-File -Encoding utf8 .ralph-smoke-fail.tmp
-            return $false
-        }
-    } catch {
-        Fail "Smoke test error: $_"
-        $_.ToString() | Out-File -Encoding utf8 .ralph-smoke-fail.tmp
+    $output = & cmd /c "$smokeCmd 2>&1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Smoke test failed (exit code: $LASTEXITCODE)"
+        ($output | Select-Object -Last 50) -join "`n" | Out-File -Encoding utf8 .ralph-smoke-fail.tmp
         return $false
     }
 
-    Smoke "All checks passed"
+    Write-Smoke "All checks passed"
     return $true
 }
 
-# ── Run with timeout ─────────────────────────────────────
-function Invoke-WithTimeout($command, $args, $timeoutSeconds) {
-    $process = Start-Process -FilePath $command -ArgumentList $args -NoNewWindow -PassThru -RedirectStandardOutput ".ralph-stdout.tmp" -RedirectStandardError ".ralph-stderr.tmp"
-
-    $completed = $process.WaitForExit($timeoutSeconds * 1000)
-
-    if (-not $completed) {
-        Warn "Process timed out after ${timeoutSeconds}s — killing"
-        $process | Stop-Process -Force
-        return ""
-    }
-
-    if (Test-Path ".ralph-stdout.tmp") {
-        $output = Get-Content ".ralph-stdout.tmp" -Raw
-        Remove-Item -Force ".ralph-stdout.tmp" -ErrorAction SilentlyContinue
-        Remove-Item -Force ".ralph-stderr.tmp" -ErrorAction SilentlyContinue
-        return $output
-    }
-    return ""
-}
 
 # ══════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════
-Check-Deps
+Test-Dependencies
 
 if (-not (Test-Path "prd.json")) {
     Write-Host "No prd.json found. Create one first."
     Write-Host "  Option 1: Copy prd.json.example and edit it"
-    Write-Host "  Option 2: In Claude Code, run: /prd `"your feature`""
+    Write-Host "  Option 2: claude -p 'generate a prd.json for: [YOUR FEATURE]'"
     exit 1
 }
 
@@ -197,39 +177,39 @@ if (-not (Test-Path "progress.txt")) {
 ## Codebase Patterns
 
 ## Gotchas & Lessons Learned
-
 "@ | Out-File -Encoding utf8 progress.txt
 }
 
 # Detect smoke test
 $detectedSmoke = Get-SmokeTestCommand
 if ($detectedSmoke) {
-    Log "Smoke test detected: $detectedSmoke"
+    Write-Log "Smoke test detected: $detectedSmoke"
 } else {
-    Log "No smoke test detected - Codex will be the only gate"
+    Write-Log "No smoke test detected - Codex will be the only gate"
 }
 
 # Branch setup
-$branchExists = git rev-parse --verify $BRANCH 2>$null
-if (-not $branchExists) {
-    git checkout -b $BRANCH
-    Log "Created branch: $BRANCH"
+$branchCheck = & git rev-parse --verify $script:BRANCH 2>$null
+if (-not $branchCheck) {
+    & git checkout -b $script:BRANCH
+    Write-Log "Created branch: $($script:BRANCH)"
 } else {
-    git checkout $BRANCH
-    Log "Checked out: $BRANCH"
+    & git checkout $script:BRANCH
+    Write-Log "Checked out: $($script:BRANCH)"
 }
 
-Log "Starting multi-agent Ralph loop"
-Log "Builder:  $BUILDER (timeout: ${BUILD_TIMEOUT}s, max-turns: $MAX_TURNS)"
-Log "Reviewer: $REVIEWER (timeout: ${REVIEW_TIMEOUT}s)"
-Log "Branch:   $BRANCH"
-Log "Max iterations: $MaxIterations"
-Log "Progress: $(Get-StoryCount)"
+Write-Log "Starting multi-agent Ralph loop"
+Write-Log "Builder:  $($script:BUILDER) (timeout: $($script:BUILD_TIMEOUT)s, max-turns: $($script:MAX_TURNS), session: --continue after first run)"
+Write-Log "Reviewer: $($script:REVIEWER) (timeout: $($script:REVIEW_TIMEOUT)s)"
+Write-Log "Branch:   $($script:BRANCH)"
+Write-Log "Max iterations: $MaxIterations"
+Write-Log "Progress: $(Get-StoryCount)"
 Write-Host ""
 
 $iteration = 0
 $retryCount = 0
 $lastStoryId = ""
+$isFirstBuild = $true   # Track whether to use --continue
 
 while ($iteration -lt $MaxIterations) {
     $iteration++
@@ -237,22 +217,22 @@ while ($iteration -lt $MaxIterations) {
     # ── Check if all done ────────────────────────────────
     if (Test-AllDone) {
         Write-Host ""
-        Pass "ALL STORIES COMPLETE"
-        Log "Final progress: $(Get-StoryCount)"
+        Write-Pass "ALL STORIES COMPLETE"
+        Write-Log "Final progress: $(Get-StoryCount)"
         exit 0
     }
 
     # ── Pick next story ──────────────────────────────────
     $storyJson = Get-NextStory
     if (-not $storyJson) {
-        Pass "No more stories. Done!"
+        Write-Pass "No more stories. Done!"
         exit 0
     }
 
-    $storyId = echo $storyJson | jq -r '.id'
-    $storyTitle = echo $storyJson | jq -r '.title'
-    $storyDesc = echo $storyJson | jq -r '.description'
-    $storyAC = echo $storyJson | jq -r '.acceptanceCriteria | join("\n  - ")'
+    $storyId = Get-StoryField $storyJson "id"
+    $storyTitle = Get-StoryField $storyJson "title"
+    $storyDesc = Get-StoryField $storyJson "description"
+    $storyAC = Get-StoryAC $storyJson
 
     # Reset retry counter if new story
     if ($storyId -ne $lastStoryId) {
@@ -261,8 +241,8 @@ while ($iteration -lt $MaxIterations) {
     }
 
     # Skip if too many retries
-    if ($retryCount -ge $MAX_RETRIES) {
-        Warn "Skipping $storyId after $retryCount retries"
+    if ($retryCount -ge $script:MAX_RETRIES) {
+        Write-Warn "Skipping $storyId after $retryCount retries"
         Set-StoryPassed $storyId
         Add-Progress "SKIPPED ${storyId}: Too many retries. Needs manual review."
         $lastStoryId = ""
@@ -270,10 +250,10 @@ while ($iteration -lt $MaxIterations) {
     }
 
     Write-Host ""
-    Log "==================================================="
-    Log "  ITERATION $iteration - ${storyId}: $storyTitle"
-    Log "  Progress: $(Get-StoryCount) | Attempt: $($retryCount + 1)/$MAX_RETRIES"
-    Log "==================================================="
+    Write-Log "==================================================="
+    Write-Log "  ITERATION $iteration - ${storyId}: $storyTitle"
+    Write-Log "  Progress: $(Get-StoryCount) | Attempt: $($retryCount + 1)/$($script:MAX_RETRIES)"
+    Write-Log "==================================================="
 
     # ── Read retry feedback if exists ────────────────────
     $feedback = ""
@@ -283,21 +263,19 @@ while ($iteration -lt $MaxIterations) {
     }
 
     # ── PHASE 1: BUILD (Claude Code) ─────────────────────
-    Log "Phase 1: Building with Claude Code... (timeout: ${BUILD_TIMEOUT}s)"
+    Write-Log "Phase 1: Building with Claude Code... (timeout: $($script:BUILD_TIMEOUT)s)"
 
-    $progressTail = Get-Content progress.txt -Tail 100 -ErrorAction SilentlyContinue | Out-String
+    $progressTail = ""
+    if (Test-Path "progress.txt") {
+        $progressTail = (Get-Content progress.txt -Tail 100 -ErrorAction SilentlyContinue) -join "`n"
+    }
 
     $retryBlock = ""
     if ($feedback) {
-        $retryBlock = @"
-
-WARNING - RETRY - Previous attempt failed review:
-$feedback
-
-Fix ALL issues above.
-"@
+        $retryBlock = "`nWARNING - RETRY - Previous attempt failed review:`n$feedback`n`nFix ALL issues above."
     }
 
+    # Write prompt to temp file to avoid argument escaping issues
     $buildPrompt = @"
 You are implementing ONE user story in this codebase.
 
@@ -323,25 +301,52 @@ SUMMARY: <1-2 sentences of what you did>
 LEARNINGS: <any codebase patterns or gotchas discovered>
 "@
 
-    $buildOutput = Invoke-WithTimeout $BUILDER "-p `"$($buildPrompt.Replace('"','\"'))`" --permission-mode auto --max-turns $MAX_TURNS" $BUILD_TIMEOUT
+    $buildPrompt | Out-File -Encoding utf8 .ralph-build-prompt.tmp
+    $promptFile = (Resolve-Path .ralph-build-prompt.tmp).Path
+
+    # First iteration: fresh session. Subsequent: --continue to keep context + auto-compact.
+    $useContinue = -not $isFirstBuild
+    $buildJob = Start-Job -ScriptBlock {
+        param($builderExe, $promptPath, $maxTurns, $shouldContinue)
+        $prompt = Get-Content $promptPath -Raw
+        if ($shouldContinue) {
+            $result = & $builderExe --continue -p $prompt --permission-mode auto --max-turns $maxTurns 2>&1
+        } else {
+            $result = & $builderExe -p $prompt --permission-mode auto --max-turns $maxTurns 2>&1
+        }
+        return ($result | Out-String)
+    } -ArgumentList $script:BUILDER, $promptFile, $script:MAX_TURNS, $useContinue
+
+    $buildFinished = $buildJob | Wait-Job -Timeout $script:BUILD_TIMEOUT
+    if ($buildFinished) {
+        $buildOutput = $buildJob | Receive-Job
+    } else {
+        Write-Warn "Builder timed out after $($script:BUILD_TIMEOUT)s - killing"
+        $buildJob | Stop-Job
+        $buildOutput = ""
+    }
+    $buildJob | Remove-Job -Force -ErrorAction SilentlyContinue
+    Remove-Item -Force .ralph-build-prompt.tmp -ErrorAction SilentlyContinue
 
     if (-not $buildOutput) {
-        Warn "Builder returned empty output (timeout or error). Retrying."
+        Write-Warn "Builder returned empty output (timeout or error). Retrying."
         $retryCount++
-        git checkout -- . 2>$null
-        git clean -fd 2>$null
-        Start-Sleep -Seconds $COOLDOWN
+        & git checkout -- . 2>$null
+        & git clean -fd 2>$null
+        Start-Sleep -Seconds $script:COOLDOWN
         continue
     }
 
-    Log "Builder finished. Output length: $($buildOutput.Length) chars"
+    $isFirstBuild = $false  # All subsequent builds will use --continue
+    Write-Log "Builder finished. Output length: $($buildOutput.Length) chars"
 
     # ── PHASE 2: SMOKE TEST (auto, no agent) ─────────────
     $currentSmoke = Get-SmokeTestCommand
 
-    if (-not (Invoke-SmokeTest $currentSmoke)) {
+    $smokeResult = Invoke-SmokeTest $currentSmoke
+    if (-not $smokeResult) {
         $retryCount++
-        Fail "Smoke test failed for $storyId (attempt $retryCount/$MAX_RETRIES)"
+        Write-Fail "Smoke test failed for $storyId (attempt $retryCount/$($script:MAX_RETRIES))"
 
         $smokeFeedback = ""
         if (Test-Path ".ralph-smoke-fail.tmp") {
@@ -353,16 +358,16 @@ LEARNINGS: <any codebase patterns or gotchas discovered>
 
         Add-Progress "SMOKE_FAIL $storyId (attempt ${retryCount}): Smoke test failed. Skipped Codex review."
 
-        git checkout -- . 2>$null
-        git clean -fd 2>$null
+        & git checkout -- . 2>$null
+        & git clean -fd 2>$null
 
-        Log "Progress: $(Get-StoryCount)"
-        Start-Sleep -Seconds $COOLDOWN
+        Write-Log "Progress: $(Get-StoryCount)"
+        Start-Sleep -Seconds $script:COOLDOWN
         continue
     }
 
     # ── PHASE 3: REVIEW (Codex) ──────────────────────────
-    Log "Phase 3: Reviewing with Codex... (timeout: ${REVIEW_TIMEOUT}s)"
+    Write-Log "Phase 3: Reviewing with Codex... (timeout: $($script:REVIEW_TIMEOUT)s)"
 
     $buildSummary = ($buildOutput -split "`n") | Select-Object -Last 50 | Out-String
 
@@ -397,38 +402,61 @@ FEEDBACK: <specific issues to fix>
 LEARNINGS: <any insights>
 "@
 
-    $reviewOutput = Invoke-WithTimeout $REVIEWER "exec --full-auto --sandbox workspace-write `"$($reviewPrompt.Replace('"','\"'))`"" $REVIEW_TIMEOUT
+    $reviewPrompt | Out-File -Encoding utf8 .ralph-review-prompt.tmp
+    $reviewPromptFile = (Resolve-Path .ralph-review-prompt.tmp).Path
+
+    $reviewJob = Start-Job -ScriptBlock {
+        param($reviewerExe, $promptPath)
+        $prompt = Get-Content $promptPath -Raw
+        $result = & $reviewerExe exec --full-auto --sandbox workspace-write $prompt 2>&1
+        return ($result | Out-String)
+    } -ArgumentList $script:REVIEWER, $reviewPromptFile
+
+    $reviewFinished = $reviewJob | Wait-Job -Timeout $script:REVIEW_TIMEOUT
+    if ($reviewFinished) {
+        $reviewOutput = $reviewJob | Receive-Job
+    } else {
+        Write-Warn "Reviewer timed out after $($script:REVIEW_TIMEOUT)s - killing"
+        $reviewJob | Stop-Job
+        $reviewOutput = ""
+    }
+    $reviewJob | Remove-Job -Force -ErrorAction SilentlyContinue
+    Remove-Item -Force .ralph-review-prompt.tmp -ErrorAction SilentlyContinue
 
     if (-not $reviewOutput) {
-        Warn "Reviewer returned empty output. Treating as pass."
+        Write-Warn "Reviewer returned empty output. Treating as pass."
         $reviewOutput = "VERDICT: PASS"
     }
 
     # ── PHASE 4: PARSE VERDICT ───────────────────────────
     $verdictLine = ($reviewOutput -split "`n") | Where-Object { $_ -match "^VERDICT:" } | Select-Object -First 1
-    $verdict = if ($verdictLine) { ($verdictLine -replace "VERDICT:", "").Trim().ToUpper() } else { "" }
+    $verdict = ""
+    if ($verdictLine) { $verdict = ($verdictLine -replace "VERDICT:", "").Trim().ToUpper() }
 
-    $feedbackLines = ($reviewOutput -split "`n") | Where-Object { $_ -match "^FEEDBACK:" } | Select-Object -First 1
-    $reviewFeedback = if ($feedbackLines) { ($feedbackLines -replace "FEEDBACK:", "").Trim() } else { "" }
+    $feedbackLine = ($reviewOutput -split "`n") | Where-Object { $_ -match "^FEEDBACK:" } | Select-Object -First 1
+    $reviewFeedback = ""
+    if ($feedbackLine) { $reviewFeedback = ($feedbackLine -replace "FEEDBACK:", "").Trim() }
 
     $learningsLine = ($reviewOutput -split "`n") | Where-Object { $_ -match "^LEARNINGS:" } | Select-Object -First 1
-    $reviewLearnings = if ($learningsLine) { ($learningsLine -replace "LEARNINGS:", "").Trim() } else { "" }
+    $reviewLearnings = ""
+    if ($learningsLine) { $reviewLearnings = ($learningsLine -replace "LEARNINGS:", "").Trim() }
 
     # Record learnings from builder
     $buildLearningsLine = ($buildOutput -split "`n") | Where-Object { $_ -match "^LEARNINGS:" } | Select-Object -First 1
-    $buildLearnings = if ($buildLearningsLine) { ($buildLearningsLine -replace "LEARNINGS:", "").Trim() } else { "" }
+    $buildLearnings = ""
+    if ($buildLearningsLine) { $buildLearnings = ($buildLearningsLine -replace "LEARNINGS:", "").Trim() }
 
     if ($buildLearnings) { Add-Progress "[Builder - $storyId] $buildLearnings" }
     if ($reviewLearnings) { Add-Progress "[Reviewer - $storyId] $reviewLearnings" }
 
     # ── Handle verdict ───────────────────────────────────
     if ($verdict -eq "PASS") {
-        Pass "${storyId}: $storyTitle"
+        Write-Pass "${storyId}: $storyTitle"
 
         Set-StoryPassed $storyId
 
-        git add -A
-        git commit -m "[ralph] ${storyId}: $storyTitle" 2>$null
+        & git add -A
+        & git commit -m "[ralph] ${storyId}: $storyTitle" 2>$null
 
         Add-Progress "COMPLETED ${storyId}: $storyTitle"
 
@@ -437,28 +465,30 @@ LEARNINGS: <any insights>
 
     } elseif ($verdict -eq "FAIL") {
         $retryCount++
-        Fail "$storyId (attempt $retryCount/$MAX_RETRIES)"
+        Write-Fail "$storyId (attempt $retryCount/$($script:MAX_RETRIES))"
 
         $reviewFeedback | Out-File -Encoding utf8 .ralph-feedback.tmp
 
-        Add-Progress "REVIEW_FAIL $storyId (attempt ${retryCount}): $($reviewFeedback.Substring(0, [Math]::Min(200, $reviewFeedback.Length)))"
+        $truncated = $reviewFeedback
+        if ($truncated.Length -gt 200) { $truncated = $truncated.Substring(0, 200) }
+        Add-Progress "REVIEW_FAIL $storyId (attempt ${retryCount}): $truncated"
 
-        git checkout -- . 2>$null
-        git clean -fd 2>$null
+        & git checkout -- . 2>$null
+        & git clean -fd 2>$null
 
     } else {
-        Warn "Unclear verdict: '$verdict'. Treating as pass."
+        Write-Warn "Unclear verdict: '$verdict'. Treating as pass."
         Set-StoryPassed $storyId
-        git add -A
-        git commit -m "[ralph] ${storyId}: $storyTitle" 2>$null
+        & git add -A
+        & git commit -m "[ralph] ${storyId}: $storyTitle" 2>$null
         $lastStoryId = ""
     }
 
-    Log "Progress: $(Get-StoryCount)"
-    Start-Sleep -Seconds $COOLDOWN
+    Write-Log "Progress: $(Get-StoryCount)"
+    Start-Sleep -Seconds $script:COOLDOWN
 }
 
 Write-Host ""
-Warn "Reached max iterations ($MaxIterations)."
-Log "Final progress: $(Get-StoryCount)"
-Log "Run again to continue."
+Write-Warn "Reached max iterations ($MaxIterations)."
+Write-Log "Final progress: $(Get-StoryCount)"
+Write-Log "Run again to continue."

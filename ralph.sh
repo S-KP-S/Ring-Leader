@@ -205,7 +205,7 @@ else
 fi
 
 log "Starting multi-agent Ralph loop"
-log "Builder:  $BUILDER (timeout: ${BUILD_TIMEOUT}s, max-turns: $MAX_TURNS)"
+log "Builder:  $BUILDER (timeout: ${BUILD_TIMEOUT}s, max-turns: $MAX_TURNS, session: --continue after first run)"
 log "Reviewer: $REVIEWER (timeout: ${REVIEW_TIMEOUT}s)"
 log "Branch:   $BRANCH"
 log "Max iterations: $MAX_ITERATIONS"
@@ -216,6 +216,7 @@ ITERATION=0
 RETRY_COUNT=0
 MAX_RETRIES=3
 LAST_STORY_ID=""
+IS_FIRST_BUILD=true   # Track whether to use --continue
 
 while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     ITERATION=$((ITERATION + 1))
@@ -300,11 +301,20 @@ FILES_CHANGED: <comma-separated list>
 SUMMARY: <1-2 sentences of what you did>
 LEARNINGS: <any codebase patterns or gotchas discovered>"
 
-    BUILD_OUTPUT=$(timeout "$BUILD_TIMEOUT" \
-        $BUILDER -p "$BUILD_PROMPT" \
-        --permission-mode auto \
-        --max-turns "$MAX_TURNS" \
-        2>/dev/null) || true
+    # First iteration: fresh session. Subsequent: --continue to keep context + auto-compact.
+    if [ "$IS_FIRST_BUILD" = true ]; then
+        BUILD_OUTPUT=$(timeout "$BUILD_TIMEOUT" \
+            $BUILDER -p "$BUILD_PROMPT" \
+            --permission-mode auto \
+            --max-turns "$MAX_TURNS" \
+            2>/dev/null) || true
+    else
+        BUILD_OUTPUT=$(timeout "$BUILD_TIMEOUT" \
+            $BUILDER --continue -p "$BUILD_PROMPT" \
+            --permission-mode auto \
+            --max-turns "$MAX_TURNS" \
+            2>/dev/null) || true
+    fi
 
     if [ -z "$BUILD_OUTPUT" ]; then
         warn "Builder returned empty output (timeout or error). Retrying next iteration."
@@ -315,6 +325,7 @@ LEARNINGS: <any codebase patterns or gotchas discovered>"
         continue
     fi
 
+    IS_FIRST_BUILD=false  # All subsequent builds will use --continue
     log "Builder finished. Output length: ${#BUILD_OUTPUT} chars"
 
     # ── PHASE 2: SMOKE TEST (auto, no agent) ─────────────
