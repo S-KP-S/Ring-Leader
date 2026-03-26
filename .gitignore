@@ -1,0 +1,4 @@
+# Runtime files (generated during ralph.sh runs)
+progress.txt
+prd.json
+.ralph-feedback.tmp

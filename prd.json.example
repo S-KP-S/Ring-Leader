@@ -1,0 +1,88 @@
+{
+  "project": "example-feature",
+  "branchName": "ralph/example-feature",
+  "description": "Add user authentication with JWT tokens",
+  "userStories": [
+    {
+      "id": "US-001",
+      "category": "setup",
+      "title": "User database schema",
+      "description": "As a developer, I need a users table so that credentials can be stored.",
+      "acceptanceCriteria": [
+        "Users table with id, email, password_hash, created_at columns",
+        "Email has unique constraint",
+        "Migration runs without errors",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "category": "core",
+      "title": "Registration endpoint",
+      "description": "As a user, I want to register so I can create an account.",
+      "acceptanceCriteria": [
+        "POST /api/auth/register accepts email + password",
+        "Password is hashed with bcrypt before storage",
+        "Returns 201 with user id on success",
+        "Returns 400 if email already exists",
+        "Returns 400 if password is under 8 characters",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "category": "core",
+      "title": "Login endpoint with JWT",
+      "description": "As a user, I want to login so I can get an access token.",
+      "acceptanceCriteria": [
+        "POST /api/auth/login accepts email + password",
+        "Returns JWT token on valid credentials",
+        "Returns 401 on invalid credentials",
+        "Token expires in 24 hours",
+        "Token contains user id in payload",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "category": "integration",
+      "title": "Auth middleware",
+      "description": "As a developer, I want middleware that protects routes.",
+      "acceptanceCriteria": [
+        "Middleware extracts JWT from Authorization header",
+        "Sets req.user with decoded token payload",
+        "Returns 401 if no token or invalid token",
+        "Can be applied to any route",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "category": "polish",
+      "title": "Auth tests",
+      "description": "As a developer, I want tests so auth is verified.",
+      "acceptanceCriteria": [
+        "Tests for register (success + duplicate email + weak password)",
+        "Tests for login (success + wrong password + missing user)",
+        "Tests for middleware (valid token + expired + missing)",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
